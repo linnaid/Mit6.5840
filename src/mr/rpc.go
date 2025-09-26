@@ -24,39 +24,23 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
-// Worker 请求任务
-type TaskRequestArgs struct {
+// Worker 请求任务或上报任务完成
+type WorkerArgs struct {
 	WorkerID int;
+
+	Finished bool  // 是否完成上一个任务
+	TaskType string 
+	TaskID int
 }
 
-type TaskRequestReply struct {
+type WorkerReply struct {
+	WorkerID int
+	
 	TaskType string  // 任务类型
 	TaskID int   // 任务编号
 	FileName string  // map任务的输入文件名
 	NReduce int   // Reduce数量
 	NMap int 
-}
-
-
-// Worker 完成任务后上报结果
-type TaskCompleteArgs struct {
-	WorkerID int   // 完成任务的Worker
-	TaskType string    // 任务类型
-	TaskID int   // 任务编号
-}
-
-type TaskCompleteReply struct {
-	Ack bool   // 是否继续请求新任务
-}
-
-
-
-type RequestArgs struct {
-	WorkerID int;
-}
-
-type RequestReply struct {
-	WorkerID int;
 }
 
 // Cook up a unique-ish UNIX-domain socket name
