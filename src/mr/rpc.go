@@ -28,7 +28,7 @@ type ExampleReply struct {
 type WorkerArgs struct {
 	WorkerID int;
 
-	Finished bool  // 是否完成上一个任务
+	Finished bool  // 是否完成任务
 	TaskType string 
 	TaskID int
 }
@@ -36,7 +36,7 @@ type WorkerArgs struct {
 type WorkerReply struct {
 	WorkerID int
 	
-	TaskType string  // 任务类型
+	Task string  // 任务类型
 	TaskID int   // 任务编号
 	FileName string  // map任务的输入文件名
 	NReduce int   // Reduce数量
