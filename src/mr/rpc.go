@@ -38,7 +38,7 @@ type WorkerReply struct {
 	
 	Task string  // 任务类型
 	TaskID int   // 任务编号
-	FileName string  // map任务的输入文件名
+	Filename string  // map任务的输入文件名
 	NReduce int   // Reduce数量
 	NMap int 
 }
