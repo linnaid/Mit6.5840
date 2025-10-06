@@ -1,11 +1,14 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-import "time"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+)
 
 ///////////////////////////////////////////////////////////////
 // 以下时补充的数据结构：
@@ -34,6 +37,7 @@ type Coordinator struct {
 	MapTasks []Task     // map 任务列表
 	ReduceTasks []Task  // reduce 任务列表
 	NReduce int  		// reduce 数量
+	NMap int
 	mu sync.Mutex		// 互斥锁，保护 多RPC 并发时数据访问安全
 	nextWorkerID int    // 分配ID
 }
@@ -60,7 +64,7 @@ func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 		c.nextWorkerID++
 		reply.WorkerID = c.nextWorkerID
 	} else {
-		reply.WorkerID = c.nextWorkerID
+		reply.WorkerID = args.WorkerID
 	}
 
 	// 检查超时
@@ -80,7 +84,7 @@ func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 		if t.Status == InProgress && time.Since(t.StartTime) > 10*time.Second {
 			t.Status = Idle
 			t.WorkerID = 0
-			log.Printf("MapTask %s (map) timed out and is reset to Idle", t.Filename)
+			log.Printf("ReduceTask %d (reduce) timed out and is reset to Idle", i)
 		}
 	}
 	c.mu.Unlock()
@@ -99,6 +103,7 @@ func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 			reply.Filename = t.Filename
 			reply.TaskID = i
 			reply.NReduce = c.NReduce
+			reply.NMap = c.NMap
 			return nil
 		}
 
@@ -116,11 +121,15 @@ func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 
 				reply.Task = "reduce"
 				reply.NReduce = c.NReduce
+				reply.NMap = c.NMap
 				reply.TaskID = i
 				return nil
 			}
+		}
 
+		for _, t := range c.ReduceTasks {
 			if t.Status != Completed {
+				reply.Task = "wait"
 				return nil
 			}
 		}
@@ -204,7 +213,8 @@ func (c *Coordinator) Done() bool {
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		NReduce = nReduce,
+		NReduce: nReduce,
+		NMap: len(files),
 	}
 
 	// Your code here.
