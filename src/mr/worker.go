@@ -1,14 +1,23 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+	"time"
 
+	// "github.com/Done-0/fuck-u-code/pkg/report"
+)
+
+var workerID int
 
 //
 // Map functions return a slice of KeyValue.
-//
+// 储存中间结果的 key 和 value
 type KeyValue struct {
 	Key   string
 	Value string
@@ -17,22 +26,136 @@ type KeyValue struct {
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
+// 将输入的字符串转化为一个整数
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+// 向 coordinator 请求任务
+// func ()
 
 //
 // main/mrworker.go calls this function.
-//
+// 主逻辑
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
+		
 	// Your worker implementation here.
+	workerID = 0
+	for {
+		args := WorkerArgs{
+			WorkerID: workerID,
+		}
+		reply := WorkerReply{}
 
+		ok := call("Coordinator.AssignTask", &args, &reply)
+		if workerID == 0 {
+			workerID = reply.WorkerID
+		}
+		if !ok {
+			log.Fatalf("Worker %d: RPC failed", workerID)
+		}
+
+		switch reply.Task {
+		case "map":
+			content, err := os.ReadFile(reply.Filename)
+			if err != nil {
+				log.Fatalf("Worker %d: cannot read %v", workerID, reply.Filename)
+			}
+			kv_one := mapf(reply.Filename, string(content))
+			intermediates := make([][]KeyValue, reply.NReduce)
+			for _, kv := range kv_one {
+				r := ihash(kv.Key) % reply.NReduce
+				intermediates[r] = append(intermediates[r], kv)
+			}
+
+			// 写中间文件
+			for r, kvs := range intermediates {
+				wname := fmt.Sprintf("mr-%d-%d", reply.TaskID, r)
+				wfile, _ := os.Create(wname)
+				enc := json.NewEncoder(wfile)
+				for _, kv := range kvs {
+					err := enc.Encode(&kv)
+					if err != nil {
+						log.Fatalf("Worker %d: cannot write intermediate file", workerID)
+					}
+				}
+				wfile.Close()
+			}
+
+			// 上报任务已完成
+			reportArgs := WorkerArgs{
+				WorkerID: workerID,
+				TaskType: "map",
+				Finished: true,
+				TaskID: reply.TaskID,
+			}
+			reportReply := WorkerReply{}
+			call("Coordinator.ReportTask", &reportArgs, &reportReply)
+			
+		case "reduce":
+			// 整合 map 结果
+			intermediate := []KeyValue{}
+			for r := 0; r < reply.NMap; r++ {
+				rname := fmt.Sprintf("mr-%d-%d", r, reply.TaskID)
+				file, err := os.Open(rname)
+				if err != nil {
+					continue
+				}
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					err := dec.Decode(&kv)
+					if err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv)
+				}
+				file.Close()
+			}
+
+			// 排序
+			sort.Slice(intermediate, func(i, j int) bool {
+				return intermediate[i].Key < intermediate[j].Key
+			})
+			
+			// 写入文件
+			wname := fmt.Sprintf("mr-out-%d", reply.TaskID)
+			wfile, _ := os.Create(wname)
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+				fmt.Fprintf(wfile, "%v %v\n", intermediate[i].Key, output)
+
+				i = j
+			}
+			wfile.Close()
+
+			// 上传完成
+			reportArgs := WorkerArgs{
+				WorkerID: workerID,
+				TaskType: "reduce",
+				TaskID: reply.TaskID,
+				Finished: true,
+			}
+			reportReply := WorkerReply{}
+			call("Coordinator.ReportTask", &reportArgs, &reportReply)
+ 		case "wait":
+			time.Sleep(time.Second)
+		case "exit":
+			return
+		}
+	}
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
