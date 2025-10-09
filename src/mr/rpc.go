@@ -24,11 +24,10 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
-// Worker 请求任务或上报任务完成
 type WorkerArgs struct {
 	WorkerID int;
 
-	Finished bool  // 是否完成任务
+	Finished bool  
 	TaskType string 
 	TaskID int
 }
@@ -36,10 +35,10 @@ type WorkerArgs struct {
 type WorkerReply struct {
 	WorkerID int
 	
-	Task string  // 任务类型
-	TaskID int   // 任务编号
-	Filename string  // map任务的输入文件名
-	NReduce int   // Reduce数量
+	Task string  
+	TaskID int   
+	Filename string  
+	NReduce int 
 	NMap int 
 }
 
