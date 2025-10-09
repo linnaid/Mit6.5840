@@ -11,35 +11,31 @@ import (
 )
 
 ///////////////////////////////////////////////////////////////
-// 以下时补充的数据结构：
 
-// 展示任务状态的枚举
 type TaskStatus int
 
 const (
-	Idle TaskStatus = iota // 空闲
-	InProgress             // 正在执行中
-	Completed			   // 执行完毕
+	Idle TaskStatus = iota 
+	InProgress             
+	Completed			   
 )
 
-// 单个任务的描述
 type Task struct {
-	Filename string	  // map任务的输入文件名
-	TaskType string	  // map/reduce 任务
-	Status TaskStatus // 当前任务的状态
-	WorkerID int  	  // 执行任务的 workerID
-	StartTime time.Time // 任务开始的时间戳
+	Filename string	  
+	TaskType string	  
+	Status TaskStatus 
+	WorkerID int  	  
+	StartTime time.Time 
 }
 
-// 协调者的核心数据结构
 type Coordinator struct {
 	// Your definitions here.
-	MapTasks []Task     // map 任务列表
-	ReduceTasks []Task  // reduce 任务列表
-	NReduce int  		// reduce 数量
+	MapTasks []Task     
+	ReduceTasks []Task  
+	NReduce int  		
 	NMap int
-	mu sync.Mutex		// 互斥锁，保护 多RPC 并发时数据访问安全
-	nextWorkerID int    // 分配ID
+	mu sync.Mutex		
+	nextWorkerID int    
 }
 ///////////////////////////////////////////////////////
 
@@ -55,11 +51,9 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
-// 以下时实现的 RPC Hander(请求任务/等待任务完成)
-// 写的时候拼写成了 AssingTask, 导致调用失败，以后可不能犯这种拼写错误！！！                                                                                              )
+
 func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 
-	// 分配ID(条件：无ID时)
 	if args.WorkerID == 0 {
 		c.nextWorkerID++
 		reply.WorkerID = c.nextWorkerID
@@ -67,7 +61,6 @@ func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 		reply.WorkerID = args.WorkerID
 	}
 
-	// 检查超时
 	c.mu.Lock()
 	for i := range c.MapTasks {
 		t := &c.MapTasks[i]
@@ -142,7 +135,6 @@ func (c *Coordinator) AssignTask(args *WorkerArgs, reply *WorkerReply) error {
 	return nil
 }
 
-// 上报任务是否完成(更新任务状态)
 func (c *Coordinator) ReportTask(args *WorkerArgs, reply *WorkerReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -184,7 +176,6 @@ func (c *Coordinator) server() {
 //
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
-// 是否所有任务都已完成
 func (c *Coordinator) Done() bool {
 
 	// Your code here.
