@@ -17,7 +17,6 @@ var workerID int
 
 //
 // Map functions return a slice of KeyValue.
-// 储存中间结果的 key 和 value
 type KeyValue struct {
 	Key   string
 	Value string
@@ -26,19 +25,16 @@ type KeyValue struct {
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-// 将输入的字符串转化为一个整数
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-// 向 coordinator 请求任务
 // func ()
 
 //
 // main/mrworker.go calls this function.
-// 主逻辑
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 		
@@ -71,7 +67,6 @@ func Worker(mapf func(string, string) []KeyValue,
 				intermediates[r] = append(intermediates[r], kv)
 			}
 
-			// 写中间文件
 			for r, kvs := range intermediates {
 				wname := fmt.Sprintf("mr-%d-%d", reply.TaskID, r)
 				wfile, _ := os.Create(wname)
@@ -85,7 +80,6 @@ func Worker(mapf func(string, string) []KeyValue,
 				wfile.Close()
 			}
 
-			// 上报任务已完成
 			reportArgs := WorkerArgs{
 				WorkerID: workerID,
 				TaskType: "map",
@@ -96,7 +90,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			call("Coordinator.ReportTask", &reportArgs, &reportReply)
 			
 		case "reduce":
-			// 整合 map 结果
 			intermediate := []KeyValue{}
 			for r := 0; r < reply.NMap; r++ {
 				rname := fmt.Sprintf("mr-%d-%d", r, reply.TaskID)
@@ -116,12 +109,10 @@ func Worker(mapf func(string, string) []KeyValue,
 				file.Close()
 			}
 
-			// 排序
 			sort.Slice(intermediate, func(i, j int) bool {
 				return intermediate[i].Key < intermediate[j].Key
 			})
 			
-			// 写入文件
 			wname := fmt.Sprintf("mr-out-%d", reply.TaskID)
 			wfile, _ := os.Create(wname)
 			i := 0
@@ -141,7 +132,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 			wfile.Close()
 
-			// 上传完成
 			reportArgs := WorkerArgs{
 				WorkerID: workerID,
 				TaskType: "reduce",
