@@ -59,7 +59,7 @@ func (lk *Lock) Acquire() {
 		} else if err == rpc.ErrNoKey {
 			ok := lk.ck.Put(lk.key, lk.user, 0)
 			if ok == rpc.OK {
-				// log.Println("\033[32mResult: OK -> you have acquired the lock.\n\033[0m")
+				log.Println("\033[32mResult: OK -> you have acquired the lock.\n\033[0m")
 				return
 			} else {
 				time.Sleep(50 * time.Millisecond)
@@ -76,7 +76,7 @@ func (lk *Lock) Release() {
 		if value == lk.user {
 			ok := lk.ck.Put(lk.key, "", version)
 			if ok == rpc.OK {
-				// log.Println("\033[32mResult: OK -> you have released the lock.\n\033[0m")
+				log.Println("\033[32mResult: OK -> you have released the lock.\n\033[0m")
 				return
 			}
 		}
