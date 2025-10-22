@@ -29,6 +29,12 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	// Your data here (3A, 3B, 3C).
+	currentTerm int // 当前任期号
+	votedFor int // 当前任期内候选者id
+	state string // 当前身份
+	electionTimer *time.Timer // 控制选举超时
+	heartbeatInterval time.Duration // 定期发送心跳的间隔
+
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
