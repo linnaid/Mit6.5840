@@ -20,6 +20,7 @@ import (
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	"6.5840/tester1"
+	"go.etcd.io/etcd/client/v3/snapshot"
 )
 
 type LogEntry struct {
@@ -51,12 +52,16 @@ type Raft struct {
 
 	// 日志
 	log []LogEntry  
-	commitIndex int 
+	commitIndex int // 已知被提交的最大日志记录索引值
 	lastApplied int // 被执行的最大日志索引号
 	nextIndex []int // 每一个服务器下一个日志索引号(初使化为领导者的最后一条日志索引号+1)
 	matchIndex []int // 每一个服务器已经复制到该服务器的最大索引号(初始化为0，单调递增)
-
 	applyCh chan raftapi.ApplyMsg  // 管道，发送可执行日志消息
+
+	// 快照
+	lastIncludeIndex int // 快照中最后一条日志的索引
+	lastIncludeTerm int // 快照中最后一条日志的任期
+	snapshot []byte   // 储存来自上层 kvserver 的快照
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
@@ -98,11 +103,15 @@ func (rf *Raft) persist() {
 	// rf.persister.Save(raftstate, nil)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
+
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludeIndex)
+	e.Encode(rf.lastIncludeTerm)
+
 	data := w.Bytes()
-	rf.persister.Save(data, nil)
+	rf.persister.Save(data, rf.snapshot)
 }
 
 
@@ -131,16 +140,31 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log []LogEntry
+	var lastIncludeIndex int
+	var lastIncludeTerm int
 
 	if d.Decode(&currentTerm) != nil ||
 	d.Decode(&votedFor) != nil ||
-	d.Decode(&log) != nil {
+	d.Decode(&log) != nil || 
+	d.Decode(&lastIncludeIndex) != nil ||
+	d.Decode(&lastIncludeTerm) != nil{
 		return 
 	}
 
 	rf.currentTerm = currentTerm
 	rf.votedFor = votedFor
-	rf.log = log
+	rf.lastIncludeIndex = lastIncludeIndex
+	rf.lastIncludeTerm = lastIncludeTerm
+
+	if len(log) > 0 {
+		rf.log = log
+	} else {
+		rf.log = []LogEntry{{
+			Term: rf.lastIncludeTerm,
+		}}
+	}
+
+	rf.snapshot = rf.persister.ReadSnapshot()
 
 }
 
@@ -151,6 +175,17 @@ func (rf *Raft) PersistBytes() int {
 	return rf.persister.RaftStateSize()
 }
 
+type InstallSnapshotArgs struct {
+	Term int
+	LeaderID int
+	LastIncludeIndex int
+	LastIncludeTerm int
+	Data []byte   // 快照内容
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
 
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
@@ -158,6 +193,53 @@ func (rf *Raft) PersistBytes() int {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if index <= rf.lastIncludeIndex {
+		return
+	}
+
+	new_term := rf.log[index - rf.lastIncludeIndex].Term
+	new_log := make([]LogEntry, 0)
+	new_log = append(new_log, LogEntry{Term: new_term})
+	new_log = append(new_log, rf.log[index+1 - rf.lastIncludeIndex:]...)
+
+	rf.lastIncludeIndex = index
+	rf.lastIncludeTerm = new_term
+	rf.log = new_log
+	rf.snapshot = snapshot
+
+	if rf.commitIndex < index {
+		rf.commitIndex = index
+	}
+	if rf.lastApplied < index {
+		rf.lastApplied = index
+	}
+
+	rf.persist()
+
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term 
+		rf.state = Follower
+		rf.votedFor = -1
+		rf.persist()
+		rf.resetElectionTimer()
+	} else if args.Term < rf.currentTerm {
+		return 
+	}
+
+	if args.LastIncludeIndex <= rf.lastIncludeIndex {
+		return 
+	}
+
 
 }
 
@@ -166,11 +248,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
-	Term int
-	CandidateId int 
+	Term int // leader任期号
+	CandidateId int // 候选者id
 	// 下面是日志
-	LastLogIndex int 
-	LastLogTerm int
+	LastLogIndex int // 最新一条日志索引
+	LastLogTerm int // 最新日志任期号
 }
 
 // example RequestVote RPC reply structure.
@@ -178,7 +260,7 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	// Your data here (3A).
 	Term int 
-	VoteGranted bool
+	VoteGranted bool // 是否投票给当前任期者
 }
 
 // example RequestVote RPC handler.
@@ -242,6 +324,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.resetElectionTimer()
 	}
 
+	// 快照判断
+	if args.PrevLogIndex < rf.lastIncludeIndex {
+		rf.lastIncludeIndex = snapshot.LastIncludeIndex
+		rf.lastIncludeTerm = snapshot.LastIncludeTerm
+		rf.log = rf.log[:rf.lastIncludeIndex]
+	}
 	// 3B
 	Term := 0
 	if args.PrevLogIndex >= len(rf.log){
@@ -253,7 +341,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if args.PrevLogIndex == -1 {
 		Term = 0
 	} else {
-		Term = rf.log[args.PrevLogIndex].Term
+		///DDDDDDDDDDDDDDDDDDDDDDDD
+		sliceIndex := args.PrevLogIndex - rf.lastIncludeIndex
+		Term = rf.log[sliceIndex].Term
 	}
 	if Term !=  args.PrevLogTerm{
 		reply.Success = false
@@ -270,7 +360,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return 
 	}
 
-	idx := args.PrevLogIndex + 1
+	///DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+	idx := args.PrevLogIndex + 1 - rf.lastIncludeIndex
 	for i := 0; i < len(args.Entries); i++ {
 		// fmt.Printf("已开始循环接收日志...\n")
 		// fmt.Println(args.Entries[i].Command)
@@ -348,10 +439,10 @@ type AppendEntriesArgs struct {
 	Term int
 	LeaderId int 
 	// 下面是日志	
-	PrevLogIndex int  
-	PrevLogTerm int  
-	Entries []LogEntry 
-	LeaderCommit int  
+	PrevLogIndex int  // 之前处理的日志索引
+	PrevLogTerm int   // 日志任期号
+	Entries []LogEntry  // 需要追加的日志条目，为空则是心跳
+	LeaderCommit int    // Leader的已提交索引
 }
 
 type AppendEntriesReply struct {
@@ -829,6 +920,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]LogEntry, 1)
 	rf.log[0].Command = nil
 	rf.log[0].Term = 0
+
+	rf.lastIncludeIndex = 0
+	rf.lastIncludeTerm = 0
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.currentTerm = 0
