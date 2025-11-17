@@ -10,6 +10,7 @@ import (
 	//	"bytes"
 
 	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,7 @@ import (
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	"6.5840/tester1"
-	"go.etcd.io/etcd/client/v3/snapshot"
+	// "go.etcd.io/etcd/client/v3/snapshot"
 )
 
 type LogEntry struct {
@@ -148,6 +149,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&log) != nil || 
 	d.Decode(&lastIncludeIndex) != nil ||
 	d.Decode(&lastIncludeTerm) != nil{
+		fmt.Printf("server %v readPersist failed\n",rf.me)
 		return 
 	}
 
@@ -155,6 +157,9 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.votedFor = votedFor
 	rf.lastIncludeIndex = lastIncludeIndex
 	rf.lastIncludeTerm = lastIncludeTerm
+	///////////////////////////////
+	rf.commitIndex = rf.lastIncludeIndex
+	rf.lastApplied = rf.lastIncludeIndex
 
 	if len(log) > 0 {
 		rf.log = log
@@ -193,6 +198,7 @@ type InstallSnapshotReply struct {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	fmt.Printf("我要调用这个函数了\n")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -216,30 +222,80 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if rf.lastApplied < index {
 		rf.lastApplied = index
 	}
-
+	fmt.Println(rf.lastIncludeIndex, index)
 	rf.persist()
 
 }
 
+func (rf *Raft)sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool{
+	// fmt.Printf("sendAppendEntries函数进入...\n")
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	
+	// fmt.Printf("已进入函数InstallSnapshot...")
 
 	reply.Term = rf.currentTerm
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term 
+		reply.Term = args.Term
 		rf.state = Follower
 		rf.votedFor = -1
 		rf.persist()
-		rf.resetElectionTimer()
 	} else if args.Term < rf.currentTerm {
+		rf.mu.Unlock()
+		// fmt.Printf("被返回...")
+		return 
+	}
+	rf.resetElectionTimer()
+
+	if args.LastIncludeIndex < rf.lastIncludeIndex {
+		rf.mu.Unlock()
+		fmt.Printf("被返回...")
+		fmt.Println(args.LastIncludeIndex, rf.lastIncludeIndex)
 		return 
 	}
 
-	if args.LastIncludeIndex <= rf.lastIncludeIndex {
-		return 
+	if args.LastIncludeIndex < len(rf.log) + rf.lastIncludeIndex {
+		new_log := make([]LogEntry, 0) 
+		new_log = append(new_log, LogEntry{Term: args.LastIncludeTerm})
+		// fmt.Printf("Term, Index:")
+		// fmt.Println(rf.me, args.LastIncludeIndex+1-rf.lastIncludeIndex)
+		new_log = append(new_log, rf.log[args.LastIncludeIndex+1-rf.lastIncludeIndex:]...)
+		rf.log = new_log
+	} else {
+		rf.log = []LogEntry{{
+			Term: args.LastIncludeTerm,
+		}} /////////////
 	}
 
+	rf.lastIncludeIndex = args.LastIncludeIndex
+	rf.lastIncludeTerm = args.LastIncludeTerm
+	rf.snapshot = args.Data
+	
+	rf.persist()
+
+	if rf.commitIndex < rf.lastIncludeIndex {
+		rf.commitIndex = rf.lastIncludeIndex
+	}
+	if rf.lastApplied < rf.lastIncludeIndex {
+		rf.lastApplied = rf.lastIncludeIndex
+	}
+
+	rf.mu.Unlock()
+
+	applyMsg := raftapi.ApplyMsg{
+		Snapshot: args.Data,
+		SnapshotValid: true,
+		SnapshotTerm: rf.lastIncludeTerm,
+		SnapshotIndex: rf.lastIncludeIndex,
+	}
+	go func() {
+		rf.applyCh<-applyMsg
+	}()
 
 }
 
@@ -324,12 +380,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.resetElectionTimer()
 	}
 
-	// 快照判断
-	if args.PrevLogIndex < rf.lastIncludeIndex {
-		rf.lastIncludeIndex = snapshot.LastIncludeIndex
-		rf.lastIncludeTerm = snapshot.LastIncludeTerm
-		rf.log = rf.log[:rf.lastIncludeIndex]
-	}
 	// 3B
 	Term := 0
 	if args.PrevLogIndex >= len(rf.log){
@@ -361,9 +411,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	///DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+	// 关于 i 和 idx 的值要进行一些修改。。。。。。。。。
 	idx := args.PrevLogIndex + 1 - rf.lastIncludeIndex
 	for i := 0; i < len(args.Entries); i++ {
-		// fmt.Printf("已开始循环接收日志...\n")
+		fmt.Printf("已开始循环接收日志...\n")
+		fmt.Println(rf.lastIncludeIndex, idx, len(rf.log))
 		// fmt.Println(args.Entries[i].Command)
 		// fmt.Println(args.Entries[i].Term)
 		if i + idx >= len(rf.log) {
@@ -543,12 +595,42 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			go func(server int) {
 				for !rf.killed() {
 					rf.mu.Lock()
+					if rf.state != Leader {
+						rf.mu.Unlock()
+						return
+					}
+					Index := rf.nextIndex[server] - 1
+					// fmt.Println(Index, index,  rf.lastIncludeIndex)
+					// return
+
+					if Index+1 <= rf.lastIncludeIndex {
+						// fmt.Printf("已进入分支...")
+						args := InstallSnapshotArgs{
+							Term: rf.currentTerm,
+							LeaderID: rf.me,
+							LastIncludeIndex: rf.lastIncludeIndex,
+							LastIncludeTerm: rf.lastIncludeTerm,
+							Data: rf.snapshot,
+						}
+						reply := InstallSnapshotReply{}
+
+						ok := rf.sendInstallSnapshot(server, &args, &reply)
+						if ok {
+							Index = rf.lastIncludeIndex
+							rf.nextIndex[server] = Index + 1
+							rf.matchIndex[server] = rf.lastIncludeIndex
+							
+						}
+						rf.mu.Unlock()
+						continue 
+					}
+
 					args := AppendEntriesArgs{
 						Term:rf.currentTerm,
 						LeaderId: rf.me,
 						LeaderCommit: rf.commitIndex,
 					}
-					Index := rf.nextIndex[server] - 1
+					
 					if Index < 0{
 						args.PrevLogIndex = -1
 						args.PrevLogTerm = 0
@@ -631,6 +713,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 								}
 							}
 							rf.mu.Unlock()
+							time.Sleep(10*time.Millisecond)
 						}
 					}
 				}
@@ -640,8 +723,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// time.Sleep(2*time.Millisecond)
 		
 		rf.mu.Lock()
+		// fmt.Println(rf.lastApplied, rf.commitIndex)
 		msgs := []raftapi.ApplyMsg{}
 		for rf.lastApplied < rf.commitIndex {
+			// fmt.Printf("发送msg\n")
 			rf.lastApplied++
 			msgs = append(msgs, raftapi.ApplyMsg{
 				CommandValid: true,
@@ -652,6 +737,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 		rf.mu.Unlock()
 		for _, msg := range msgs {
+			// fmt.Printf("发送msg\n")
 			rf.applyCh<-msg
 		}
 	}
@@ -762,7 +848,7 @@ func (rf *Raft)startElection() {
 
 							for j := range rf.peers {
 								rf.nextIndex[j] = len(rf.log)
-								rf.matchIndex[j] = 0
+								rf.matchIndex[j] = rf.lastIncludeIndex
 							}
 						}
 					}
