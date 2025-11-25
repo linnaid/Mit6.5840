@@ -206,16 +206,20 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if index <= rf.lastIncludeIndex {
 		return
 	}
-	lastIndex := rf.lastIncludeIndex + len(rf.log) - 1
-	if lastIndex < index {
-		index = lastIndex
-	}
 
-	new_term := rf.log[index-rf.lastIncludeIndex].Term
+	// 不能修改index，应该信任
+	// lastIndex := rf.lastIncludeIndex + len(rf.log) - 1
+	// if lastIndex < index {
+	// 	index = lastIndex
+	// }
+
+	first_index := rf.lastIncludeIndex
+	second_index := index - first_index
+	new_term := rf.log[second_index].Term
 	new_log := make([]LogEntry, 0)
 	new_log = append(new_log, LogEntry{Term: new_term})
 	if index-rf.lastIncludeIndex+1 < len(rf.log) {
-		new_log = append(new_log, rf.log[index+1-rf.lastIncludeIndex:]...)
+		new_log = append(new_log, rf.log[second_index+1:]...)
 	}
 
 	rf.lastIncludeIndex = index
@@ -304,6 +308,18 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	rf.persist()
+
+	rf.mu.Unlock()
+
+	go func() { 
+		rf.applyCh<-raftapi.ApplyMsg{
+			SnapshotValid: true,
+			Snapshot: rf.snapshot,
+			SnapshotIndex: rf.lastIncludeIndex,
+			SnapshotTerm: rf.lastIncludeTerm,
+		}
+	}()
+	rf.mu.Lock()
 }
 // 到这里结束--------------------------------
 
